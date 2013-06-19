@@ -1,0 +1,9 @@
+tracebrk assists in locating memory leaks in x86-64 Linux programs by
+identifying memory allocations that result in the extension of a processes data
+segment, for example when a brk-backed malloc cannot fulfill a request from its
+free list. tracebrk attaches to a running process via ptrace and displays a
+backtrace any time the brk syscall is invoked. Usual caveats of producing a
+backtrace via libunwind apply; most importantly, the program should be compiled
+with debugging symbols. Note that malloc allocations
+
+- Adam Thomason, athomason@cpan.org
