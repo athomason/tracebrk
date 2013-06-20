@@ -27,9 +27,15 @@
     #error Only x86_64 supported.
 #endif
 
+#define USAGE()    do { FATAL("usage: %s [-e <exe>] [-p <pid>] [-c] [-q]\n", argv[0]); } while (0)
 #define WARN(...)  do { fprintf(stderr, __VA_ARGS__); } while (0)
 #define FATAL(...) do { fprintf(stderr, __VA_ARGS__); return EXIT_FAILURE; } while (0)
 #define PANIC(...) do { fprintf(stderr, __VA_ARGS__); goto CLEANUP; } while (0)
+#define ERRSTR     (strerror(errno))
+
+#define DEBUG 0
+
+extern char **environ;
 
 int stopped = 0;
 void handler(int sig) {
@@ -42,46 +48,86 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2)
-        FATAL("usage: %s [-c] <pid> [<exe>]\n", argv[0]);
+        USAGE();
 
     int trace_mmap = 0;
+    int quiet = 0;
+    pid_t pid = 0;
+    const char* binary = NULL;
+
     int opt;
-    while ((opt = getopt(argc, argv, "m")) != -1) {
-        if (opt == 'm')
+    while ((opt = getopt(argc, argv, "e:p:mqh")) != -1) {
+        if (opt == 'e')
+            binary = strdup(optarg);
+        else if (opt == 'p') {
+            if ((pid = atoi(optarg)) == 0)
+                FATAL("bad pid '%s'\n", optarg);
+            if (kill(pid, 0) < 0)
+                FATAL("couldn't signal process %d: %s\n", pid, ERRSTR);
+        }
+        else if (opt == 'm')
             trace_mmap++;
+        else if (opt == 'q')
+            quiet++;
+        else if (opt == 'h')
+            USAGE();
     }
 
-    pid_t pid = atoi(argv[optind++]);
-    if (!pid)
-        FATAL("bad pid '%s'\n", argv[optind-1]);
-    if (kill(pid, 0) < 0)
-        FATAL("couldn't signal process %d: %s\n", pid, strerror(errno));
+    if (!binary && !pid)
+        FATAL("either -e or -p is required\n");
 
-    const char* image = NULL;
-    if (optind < argc)
-        image = argv[optind++];
+    int started = 0;
+    if (pid) {
+        if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) < 0)
+            FATAL("PTRACE_ATTACH failed: %s\n", ERRSTR);
+    }
+    else {
+        pid = fork();
+        if (pid < 0)
+            FATAL("fork failed: %s\n", ERRSTR);
+        else if (pid == 0) {
+            if (quiet) {
+                close(1); // stdout
+                close(2); // stderr
+            }
 
+            ptrace(PTRACE_TRACEME, NULL, NULL, NULL);
+
+            char** args = calloc(argc - optind + 1, sizeof(char*));
+            args[0] = (char*) binary;
+            int i;
+            for (i = 0; optind < argc; optind++, i++)
+                args[i] = argv[optind];
+
+            execve(binary, args, environ);
+            FATAL("exec of %s failed: %s\n", binary, ERRSTR);
+        }
+        started = 1;
+    }
+
+    struct UPT_info* ui = _UPT_create(pid);
     unw_addr_space_t as = unw_create_addr_space(&_UPT_accessors, 0);
     if (!as)
         FATAL("unw_create_addr_space() failed");
     unw_set_caching_policy(as, UNW_CACHE_GLOBAL);
 
-    struct UPT_info* ui = _UPT_create (pid);
-
     signal(SIGINT, handler);
-
-    if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) < 0)
-        FATAL("PTRACE_ATTACH failed: %s\n", strerror(errno));
 
     int entering; // go through loop twice per syscall, once on entry and again on exit
     void* last_brk = NULL;
-    for (entering = 1; !stopped; entering = !entering) {
+    for (entering = 0; !stopped; entering = !entering) {
         int status;
         if (waitpid(-1, &status, 0) < 0) {
             if (errno == EINTR)
                 continue;
-            PANIC("waitpid() failed: %s\n", strerror(errno));
+            PANIC("waitpid() failed: %s\n", ERRSTR);
         }
+
+        #if DEBUG
+        fprintf(stderr, "entering=%d exited=%d signaled=%d stopped=%d sig=%d\n",
+                entering, WIFEXITED(status), WIFSIGNALED(status),
+                WIFSTOPPED(status), WSTOPSIG(status));
+        #endif
 
         if (WIFEXITED(status) || WIFSIGNALED(status))
             break;
@@ -95,37 +141,39 @@ main(int argc, char** argv)
                 break;
             else if (sig != SIGTRAP)
                 pending_sig = sig;
-            else { // SIGTRAP
+            else if (!entering) { // SIGTRAP
                 long syscall, retval;
                 struct user_regs_struct regs;
                 syscall = ptrace(PTRACE_PEEKUSER, pid, SYSCALL_NUM_OFFSET, NULL);
                 retval = ptrace(PTRACE_PEEKUSER, pid, SYSCALL_RET_OFFSET, NULL);
                 ptrace(PTRACE_GETREGS, pid, NULL, &regs);
 
-                if (!entering) {
-                    if (syscall == SYS_brk) {
-                        void* new_brk = (void*) retval;
-                        if (last_brk == NULL)
-                            printf("brk is at %p\n", new_brk);
-                        else if (new_brk == last_brk)
-                            printf("brk unchanged at %p\n", new_brk);
-                        else
-                            printf("new brk is at %p (%ld bytes more)\n",
-                                   new_brk, new_brk - last_brk);
-                        last_brk = new_brk;
+                #if DEBUG
+                fprintf(stderr, "  syscall=%ld retval=%ld\n", syscall, retval);
+                #endif
+
+                if (syscall == SYS_brk) {
+                    void* new_brk = (void*) retval;
+                    if (last_brk == NULL)
+                        printf("brk is at %p\n", new_brk);
+                    else if (new_brk == last_brk)
+                        printf("brk unchanged at %p\n", new_brk);
+                    else
+                        printf("brk moved %ld bytes to %p\n",
+                                new_brk - last_brk, new_brk);
+                    last_brk = new_brk;
+                    show_backtrace++;
+                }
+                else if (trace_mmap && syscall == SYS_mmap) {
+                    void* addr = (void*) retval;
+                    int len = (int) regs.SYSCALL_ARG2;
+                    int prot = (int) regs.SYSCALL_ARG3;
+                    int flags = (int) regs.SYSCALL_ARG4;
+                    if (prot & PROT_READ && prot & PROT_WRITE &&
+                        flags & MAP_PRIVATE && flags & MAP_ANONYMOUS
+                    ) {
                         show_backtrace++;
-                    }
-                    else if (trace_mmap && syscall == SYS_mmap) {
-                        void* addr = (void*) retval;
-                        int len = (int) regs.SYSCALL_ARG2;
-                        int prot = (int) regs.SYSCALL_ARG3;
-                        int flags = (int) regs.SYSCALL_ARG4;
-                        if (prot & PROT_READ && prot & PROT_WRITE &&
-                            flags & MAP_PRIVATE && flags & MAP_ANONYMOUS
-                        ) {
-                            show_backtrace++;
-                            printf("new anonymous map of %d bytes at %p\n", len, addr);
-                        }
+                        printf("new anonymous map of %d bytes at %p\n", len, addr);
                     }
                 }
             }
@@ -153,13 +201,13 @@ main(int argc, char** argv)
 
                 // call addr2line for file and line info
                 char linenum[256] = "";
-                if (image) {
+                if (binary) {
                     char addr2line[128];
-                    snprintf(addr2line, sizeof(addr2line), "addr2line -C -e %s -i %lx", image, ip);
+                    snprintf(addr2line, sizeof(addr2line), "addr2line -C -e %s -i %lx", binary, ip);
 
                     FILE* f = popen(addr2line, "r");
                     if (f == NULL)
-                        WARN("popen failed: %s\n", strerror(errno));
+                        WARN("popen failed: %s\n", ERRSTR);
                     else {
                         // read just first file:line pair
                         char output[256];
@@ -199,13 +247,15 @@ main(int argc, char** argv)
         }
 
         if (ptrace(PTRACE_SYSCALL, pid, NULL, pending_sig) < 0)
-            PANIC("PTRACE_SYSCALL: %s\n", strerror(errno));
+            PANIC("PTRACE_SYSCALL: %s\n", ERRSTR);
     }
 
     CLEANUP:
     ptrace(PTRACE_DETACH, pid, NULL, NULL);
     _UPT_destroy (ui);
     unw_destroy_addr_space(as);
+    if (started)
+        kill(pid, SIGKILL);
 
     return EXIT_SUCCESS;
 }

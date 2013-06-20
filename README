@@ -1,7 +1,8 @@
-usage: tracebrk <pid> [<exe>]
+usage: tracebrk [-p <pid>] [-e <exe>] [-m] [-q] [-- <args...>]
 
-  where pid is the process to attach to and exe is the path to the process'
-  executable.
+  where pid is an existing process to attach to and exe is the path to the
+  process' executable. If pid is not provided, exe must be given and the
+  program will be executed with the given arguments.
 
 tracebrk assists in locating memory leaks in Linux programs by identifying
 allocations that result in the extension of a process' data segment, for
@@ -14,8 +15,12 @@ M_MMAP_THRESHOLD in mallopt(3) for more. Optionally via the -m flag, tracebrk
 can also show a backtrace any time mmap is invoked to request an anonymous,
 private mapping.
 
-trackbrk requires libunwind. addr2line (part of binutils) will be used if
-present.
+The -q flag causes the standard output and error of <exe> to not be closed,
+though this is meaningless with -p.
+
+trackbrk requires libunwind. If present, addr2line (part of binutils) will be
+used to supplement function addresses with the source file and line numbers
+read from the binary's debug symbols.
 
 tracebrk has been tested only on x86_64 Linux, though i386 could be made to
 work.
