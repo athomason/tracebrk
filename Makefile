@@ -5,5 +5,8 @@ EXE=tracebrk
 
 all: $(EXE)
 
+test: test/grow
+	$(MAKE) -C test grow
+
 clean:
-	-rm -f $(EXE)
+	-rm -f $(EXE) test/grow

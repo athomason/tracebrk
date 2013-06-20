@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <getopt.h>
 #include <libunwind-ptrace.h>
 #include <signal.h>
 #include <stdio.h>
@@ -14,7 +15,6 @@
 
 #if defined __x86_64__
     // http://en.wikipedia.org/wiki/X86_calling_conventions#System_V_AMD64_ABI
-    // http://www.x86-64.org/documentation/abi.pdf
     #define SYSCALL_ARG1        rdi
     #define SYSCALL_ARG2        rsi
     #define SYSCALL_ARG3        rdx
@@ -26,7 +26,6 @@
 #else
     #error Only x86_64 supported.
 #endif
-
 
 #define WARN(...)  do { fprintf(stderr, __VA_ARGS__); } while (0)
 #define FATAL(...) do { fprintf(stderr, __VA_ARGS__); return EXIT_FAILURE; } while (0)
@@ -43,17 +42,27 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2)
-        FATAL("usage: %s <pid> [<exe>]\n", argv[0]);
+        FATAL("usage: %s [-c] <pid> [<exe>]\n", argv[0]);
 
-    pid_t pid = atoi(argv[1]);
+    int trace_mmap = 0;
+    int opt;
+    while ((opt = getopt(argc, argv, "m")) != -1) {
+        switch (opt) {
+            case 'm':
+                trace_mmap = 1;
+                break;
+        }
+    }
+
+    pid_t pid = atoi(argv[optind++]);
     if (!pid)
-        FATAL("bad pid %d\n", pid);
+        FATAL("bad pid '%s'\n", argv[optind-1]);
     if (kill(pid, 0) < 0)
         FATAL("couldn't signal process %d: %s\n", pid, strerror(errno));
 
     const char* image = NULL;
-    if (argc > 2)
-        image = argv[2];
+    if (optind < argc)
+        image = argv[optind++];
 
     unw_addr_space_t as = unw_create_addr_space(&_UPT_accessors, 0);
     if (!as)
@@ -104,11 +113,12 @@ main(int argc, char** argv)
                         else if (new_brk == last_brk)
                             printf("brk unchanged at %p\n", new_brk);
                         else
-                            printf("new brk is at %p (%ld bytes more)\n", new_brk, new_brk - last_brk);
+                            printf("new brk is at %p (%ld bytes more)\n",
+                                   new_brk, new_brk - last_brk);
                         last_brk = new_brk;
-                        show_backtrace = 1;
+                        show_backtrace++;
                     }
-                    else if (syscall == SYS_mmap) {
+                    else if (trace_mmap && syscall == SYS_mmap) {
                         void* addr = (void*) retval;
                         int len = (int) regs.SYSCALL_ARG2;
                         int prot = (int) regs.SYSCALL_ARG3;
@@ -117,7 +127,7 @@ main(int argc, char** argv)
                             flags & MAP_PRIVATE && flags & MAP_ANONYMOUS
                         ) {
                             show_backtrace++;
-                            printf("new anonymous mmap of %d bytes at %p\n", len, addr);
+                            printf("new anonymous map of %d bytes at %p\n", len, addr);
                         }
                     }
                 }
@@ -125,11 +135,10 @@ main(int argc, char** argv)
         }
 
         if (show_backtrace) {
-            unw_word_t ip, sp, start_ip = 0, off;
+            unw_word_t ip, sp, start_ip = 0;
             int n = 0, ret;
             unw_cursor_t c;
             char buf[512];
-            size_t len;
 
             ret = unw_init_remote(&c, as, ui);
             if (ret < 0)
@@ -143,15 +152,38 @@ main(int argc, char** argv)
                     start_ip = ip;
 
                 buf[0] = '\0';
-                unw_get_proc_name(&c, buf, sizeof(buf), &off);
+                unw_get_proc_name(&c, buf, sizeof(buf), NULL);
 
-                if (off) {
-                    len = strlen(buf);
-                    if (len >= sizeof(buf) - 32)
-                        len = sizeof(buf) - 32;
-                    sprintf(buf + len, "+0x%lx", (unsigned long) off);
+                // call addr2line for file and line info
+                char linenum[256] = "";
+                if (image) {
+                    char addr2line[128];
+                    snprintf(addr2line, sizeof(addr2line), "addr2line -C -e %s -i %lx", image, ip);
+
+                    FILE* f = popen(addr2line, "r");
+                    if (f == NULL)
+                        WARN("popen failed: %s\n", strerror(errno));
+                    else {
+                        // read just first file:line pair
+                        char output[256];
+                        if (fgets(output, sizeof(output), f) && output[0] != '?') {
+                            // chomp newline while copying
+                            char *p, *q;
+                            for (p = output, q = linenum; p != 0; p++, q++) {
+                                if (*p == '\n') {
+                                    *q = '\0';
+                                    break;
+                                }
+                                else {
+                                    *q = *p;
+                                }
+                            }
+                        }
+                        pclose(f);
+                    }
                 }
-                printf("%016lx %-32s (sp=%016lx)\n", (long) ip, buf, (long) sp);
+
+                printf("%016lx %-32s %s\n", (long) ip, buf, linenum);
 
                 ret = unw_step(&c);
                 if (ret < 0) {
@@ -164,14 +196,6 @@ main(int argc, char** argv)
                     /* guard against bad unwind info in old libraries... */
                     PANIC("too deeply nested---assuming bogus unwind (start ip=%lx)\n",
                         (long) start_ip);
-                }
-
-                if (image) {
-                    char addr2line[128];
-                    snprintf(addr2line, sizeof(addr2line), "addr2line -C -e %s -i %lx", image, ip);
-                    int ret = system(addr2line) < 0;
-                    if (ret < 0)
-                        WARN("addr2line failed: %s\n", strerror(errno));
                 }
             } while (ret > 0);
             printf("\n");

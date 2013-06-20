@@ -10,12 +10,14 @@ tracebrk attaches to a running process via ptrace and displays a backtrace any
 time the brk syscall is invoked.
 
 Note that malloc allocations may occur through mmap instead of brk; see
-M_MMAP_THRESHOLD in mallopt(3) for more. tracebrk will also show a backtrace
-any time mmap is invoked to request an anonymous, private mapping.
+M_MMAP_THRESHOLD in mallopt(3) for more. Optionally via the -m flag, tracebrk
+can also show a backtrace any time mmap is invoked to request an anonymous,
+private mapping.
 
 trackbrk requires libunwind. addr2line (part of binutils) will be used if
 present.
 
-tracebrk has been tested only on x86_64 Linux, though i386 might work.
+tracebrk has been tested only on x86_64 Linux, though i386 could be made to
+work.
 
 - Adam Thomason, athomason@cpan.org

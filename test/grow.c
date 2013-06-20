@@ -1,7 +1,7 @@
-// test utility to call sbrk/malloc repeatedly
+// test utility to call sbrk/malloc repeatedly. "make grow" to build.
 
-#define USE_MALLOC 1
-#define USE_SBRK 0
+#define USE_MALLOC 0
+#define USE_SBRK 1
 
 #include <malloc.h>
 #include <stdio.h>
