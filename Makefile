@@ -1,4 +1,4 @@
-PLATFORM=$(shell uname -p)
+PLATFORM=$(shell uname -m)
 CFLAGS=-g -O2 -Wall
 LDLIBS=-lunwind-ptrace -lunwind-$(PLATFORM)
 EXE=tracebrk
