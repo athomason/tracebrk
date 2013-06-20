@@ -47,11 +47,8 @@ main(int argc, char** argv)
     int trace_mmap = 0;
     int opt;
     while ((opt = getopt(argc, argv, "m")) != -1) {
-        switch (opt) {
-            case 'm':
-                trace_mmap = 1;
-                break;
-        }
+        if (opt == 'm')
+            trace_mmap++;
     }
 
     pid_t pid = atoi(argv[optind++]);
