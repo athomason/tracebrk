@@ -62,6 +62,8 @@ main(int argc, char** argv)
 
     struct UPT_info* ui = _UPT_create (pid);
 
+    signal(SIGINT, handler);
+
     if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) < 0)
         FATAL("PTRACE_ATTACH failed: %s\n", strerror(errno));
 
