@@ -129,8 +129,10 @@ main(int argc, char** argv)
                 WIFSTOPPED(status), WSTOPSIG(status));
         #endif
 
-        if (WIFEXITED(status) || WIFSIGNALED(status))
-            break;
+        if (WIFEXITED(status))
+            PANIC("pid %d exited normally with status %d\n", pid, WEXITSTATUS(status));
+        if (WIFSIGNALED(status))
+            PANIC("pid %d exited due to unexpected signal %d\n", pid, WTERMSIG(status));
 
         int pending_sig = 0, show_backtrace = 0;
         if (WIFSTOPPED(status)) {
